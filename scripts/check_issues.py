@@ -112,14 +112,30 @@ def ai_filter(issue):
         return {"matches": False, "reason": "שגיאת פענוח"}
 
 
-def send_email(matched_issues):
+def send_summary_email(matched, rejected):
     lines = []
-    for issue, verdict in matched_issues:
-        lines.append(
-            f"{issue['title']}\n{issue['html_url']}\nלמה זה מתאים: {verdict['reason']}\n"
-        )
-    body = "\n---\n".join(lines)
-    subject = f"🐛 {len(matched_issues)} באגים חדשים שמתאימים לך"
+
+    if matched:
+        lines.append(f"✔ נמצאו {len(matched)} התאמות:\n")
+        for issue, verdict in matched:
+            lines.append(
+                f"{issue['title']}\n{issue['html_url']}\nלמה זה מתאים: {verdict['reason']}\n"
+            )
+
+    if rejected:
+        lines.append(f"\n✘ נבדקו ונדחו ({len(rejected)}):\n")
+        for issue, verdict in rejected:
+            lines.append(
+                f"{issue['title']}\n{issue['html_url']}\nלמה נדחה: {verdict['reason']}\n"
+            )
+
+    body = "\n---\n".join(lines) if lines else "לא נמצאו Issues חדשים לבדיקה בריצה הזו."
+
+    if matched:
+        subject = f"🐛 {len(matched)} התאמות, {len(rejected)} נדחו"
+    else:
+        subject = f"ℹ️ נבדקו {len(rejected)} Issues - אין התאמות הפעם"
+
     send_raw_email(subject, body)
 
 
@@ -149,6 +165,7 @@ def main():
     print(f"בודקים {len(to_check)} מתוכם בריצה הזו (מקסימום {MAX_PER_RUN})")
 
     matched = []
+    rejected = []
     quota_hit = False
 
     for i, issue in enumerate(to_check):
@@ -162,16 +179,17 @@ def main():
             matched.append((issue, verdict))
             print(f"✔ מתאים: {issue['title']} - {verdict['reason']}")
         else:
+            rejected.append((issue, verdict))
             print(f"✘ לא מתאים: {issue['title']} - {verdict['reason']}")
         seen.add(str(issue["id"]))  # מסמנים כ"נראה" גם אם נדחה, כדי לא לבדוק שוב
         if i < len(to_check) - 1:
             time.sleep(SECONDS_BETWEEN_CALLS)
 
-    if matched:
-        send_email(matched)
-        print(f"נשלח מייל עם {len(matched)} התאמות")
+    if matched or rejected:
+        send_summary_email(matched, rejected)
+        print(f"נשלח מייל: {len(matched)} התאמות, {len(rejected)} נדחו")
     else:
-        print("לא נמצאו התאמות בריצה הזו - לא נשלח מייל")
+        print("לא נמצאו Issues חדשים לבדיקה - לא נשלח מייל")
 
     if quota_hit:
         send_raw_email(

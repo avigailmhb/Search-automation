@@ -12,8 +12,8 @@ import google.generativeai as genai
 BASE_QUERY = "org:microsoft is:issue is:open no:assignee label:bug"
 SEEN_FILE = "seen_issues.json"
 
-# כמה זמן אחורה לחפש (בשעות). מכסה גם קצת "רזרבה" כדי לא לפספס אם ריצה התעכבה
-LOOKBACK_HOURS = 1.1
+# כמה זמן אחורה לחפש (בשעות). מכסה "רזרבה" רחבה כדי לא לפספס אם ריצה קודמת דולגה
+LOOKBACK_HOURS = 3
 
 # כמה Issues חדשים לבדוק לכל היותר בריצה אחת (כדי לא לחרוג ממכסת החינם של Gemini)
 MAX_PER_RUN = 5

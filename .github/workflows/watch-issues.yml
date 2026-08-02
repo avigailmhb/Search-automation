@@ -2,7 +2,7 @@ name: Watch new issues
 
 on:
   schedule:
-    - cron: "0 * * * *"   # כל שעה בדיוק
+    - cron: "17 * * * *"   # ב-17 דקות אחרי כל שעה, לא בשעה עגולה
   workflow_dispatch:        # מאפשר הרצה ידנית מהטאב Actions
 
 jobs:

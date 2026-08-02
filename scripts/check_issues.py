@@ -13,18 +13,33 @@ BASE_QUERY = "org:microsoft is:issue is:open no:assignee label:bug"
 SEEN_FILE = "seen_issues.json"
 
 # כמה זמן אחורה לחפש (בשעות). מכסה גם קצת "רזרבה" כדי לא לפספס אם ריצה התעכבה
-LOOKBACK_HOURS = 1.5
+LOOKBACK_HOURS = 1.1
 
 # כמה Issues חדשים לבדוק לכל היותר בריצה אחת (כדי לא לחרוג ממכסת החינם של Gemini)
-MAX_PER_RUN = 10
+MAX_PER_RUN = 5
 # כמה שניות להמתין בין קריאה לקריאה ל-Gemini
-SECONDS_BETWEEN_CALLS = 4
+SECONDS_BETWEEN_CALLS = 15
 
 # תארי כאן בעברית מה מעניין אותך - זה הפרופיל שה-AI בודק מולו
 MY_PROFILE = """
-מתחילה בפיתוח תוכנה, לומדת פייתון ו-C++.
-מחפשת: באגים ברורים עם שחזור פשוט, לא דורשים ידע עמוק בארכיטקטורת ענק,
-עדיף בפייתון/C++, לא issue שדורש דיון עיצובי ארוך או ידע דומייני מיוחד.
+מתחילה בפיתוח תוכנה, עם ניסיון בסיסי־בינוני ב-Python, Git, GitHub, בדיקות וקריאת קוד קיים.
+יש לה היכרות עם C++ ומוכנה לעבוד גם ב-C# או TypeScript כאשר היקף המשימה ברור.
+
+מחפשת Issues בקוד פתוח, בעיקר בפרויקטים של Microsoft, שעומדים ברוב התנאים הבאים:
+- באג ברור עם תיאור טכני ממוקד.
+- צעדי שחזור פשוטים ומלאים.
+- התנהגות צפויה מול התנהגות בפועל.
+- שינוי קטן עד בינוני, רצוי בטווח של כמה שעות עד יום עבודה.
+- אזור קוד ממוקד, ללא צורך להבין ארכיטקטורה של מערכת שלמה.
+- אפשרות לכתוב או לעדכן טסטים שמוכיחים את התיקון.
+- עדיפות ל-Python, C++ או קוד תשתיתי פשוט.
+- ללא צורך בידע דומייני מיוחד, חשבון ענן, שירות חיצוני או הרשאות פנימיות.
+- ללא דיון עיצובי, UX או החלטת מוצר שטרם הוכרעה.
+- ללא שינויי API ציבוריים מורכבים, migrations או תאימות לאחור רחבה.
+- ללא Assignee, PR מקושר או branch שכבר מכיל מימוש.
+- לא Issue אוטומטי, tracking issue, release task, roadmap item או דוח תחזוקה.
+- עדיפות ל-Issues חדשים, מסומנים bug, help wanted או good first issue.
+- עדיפות לתיקוני validation, parsing, error handling, CLI, configuration, compatibility, tests, logging או package metadata.
 """
 
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
@@ -120,13 +135,18 @@ def send_raw_email(subject, body):
 
 
 def main():
+    query = build_query()
+    print(f"שאילתה: {query}")
+
     issues = search_issues()
+    print(f"נמצאו {len(issues)} Issues שעונים על השאילתה הבסיסית")
+
     seen = load_seen()
     new_issues = [i for i in issues if str(i["id"]) not in seen]
+    print(f"מתוכם {len(new_issues)} חדשים (לא נבדקו בעבר)")
 
-    # בודקים רק MAX_PER_RUN בכל ריצה. השאר יבדקו בריצות הבאות (כל שעה),
-    # כי אנחנו לא מוסיפים אותם ל-seen עד שהם נבדקים בפועל.
     to_check = new_issues[:MAX_PER_RUN]
+    print(f"בודקים {len(to_check)} מתוכם בריצה הזו (מקסימום {MAX_PER_RUN})")
 
     matched = []
     quota_hit = False
@@ -140,12 +160,18 @@ def main():
             break
         if verdict["matches"]:
             matched.append((issue, verdict))
+            print(f"✔ מתאים: {issue['title']} - {verdict['reason']}")
+        else:
+            print(f"✘ לא מתאים: {issue['title']} - {verdict['reason']}")
         seen.add(str(issue["id"]))  # מסמנים כ"נראה" גם אם נדחה, כדי לא לבדוק שוב
         if i < len(to_check) - 1:
             time.sleep(SECONDS_BETWEEN_CALLS)
 
     if matched:
         send_email(matched)
+        print(f"נשלח מייל עם {len(matched)} התאמות")
+    else:
+        print("לא נמצאו התאמות בריצה הזו - לא נשלח מייל")
 
     if quota_hit:
         send_raw_email(

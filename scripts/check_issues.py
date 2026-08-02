@@ -1,14 +1,19 @@
 import os
 import json
 import time
+import sys
 import requests
 import smtplib
+from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 import google.generativeai as genai
 
-# שינוי כאן משנה מה מחפשים. label:bug מגביל רק לבאגים.
-QUERY = "org:microsoft is:issue is:open no:assignee label:bug created:>=2026-08-01"
+# בסיס השאילתה - חסר החלק של created:>=, הוא יתווסף דינמית בזמן ריצה
+BASE_QUERY = "org:microsoft is:issue is:open no:assignee label:bug"
 SEEN_FILE = "seen_issues.json"
+
+# כמה זמן אחורה לחפש (בשעות). מכסה גם קצת "רזרבה" כדי לא לפספס אם ריצה התעכבה
+LOOKBACK_HOURS = 1.5
 
 # כמה Issues חדשים לבדוק לכל היותר בריצה אחת (כדי לא לחרוג ממכסת החינם של Gemini)
 MAX_PER_RUN = 10
@@ -17,27 +22,22 @@ SECONDS_BETWEEN_CALLS = 4
 
 # תארי כאן בעברית מה מעניין אותך - זה הפרופיל שה-AI בודק מולו
 MY_PROFILE = """
-מתחילה בפיתוח תוכנה, עם ניסיון בסיסי־בינוני ב־Python, Git, GitHub, בדיקות וקריאת קוד קיים. יש לה היכרות עם C++ ומוכנה לעבוד גם ב־C# או TypeScript כאשר היקף המשימה ברור.
-
-מחפשת Issues בקוד פתוח, בעיקר בפרויקטים של Microsoft, שעומדים ברוב התנאים הבאים:
-
-באג ברור עם תיאור טכני ממוקד.
-צעדי שחזור פשוטים ומלאים.
-התנהגות צפויה מול התנהגות בפועל.
-שינוי קטן עד בינוני, רצוי בטווח של כמה שעות עד יום עבודה.
-אזור קוד ממוקד, ללא צורך להבין ארכיטקטורה של מערכת שלמה.
-אפשרות לכתוב או לעדכן טסטים שמוכיחים את התיקון.
-עדיפות ל־Python, C++ או קוד תשתיתי פשוט.
-ללא צורך בידע דומייני מיוחד, חשבון ענן, שירות חיצוני או הרשאות פנימיות.
-ללא דיון עיצובי, UX או החלטת מוצר שטרם הוכרעה.
-ללא שינויי API ציבוריים מורכבים, migrations או תאימות לאחור רחבה.
-ללא Assignee, PR מקושר או branch שכבר מכיל מימוש.
-לא Issue אוטומטי, tracking issue, release task, roadmap item או דוח תחזוקה.
-עדיפות ל־Issues חדשים, מסומנים bug, help wanted או good first issue.
-עדיפות לתיקוני validation, parsing, error handling, CLI, configuration, compatibility, tests, logging או package metadata.
+מתחילה בפיתוח תוכנה, לומדת פייתון ו-C++.
+מחפשת: באגים ברורים עם שחזור פשוט, לא דורשים ידע עמוק בארכיטקטורת ענק,
+עדיף בפייתון/C++, לא issue שדורש דיון עיצובי ארוך או ידע דומייני מיוחד.
 """
 
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+
+
+class QuotaExceededError(Exception):
+    pass
+
+
+def build_query():
+    since = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
+    since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"{BASE_QUERY} created:>={since_str}"
 
 
 def search_issues():
@@ -46,7 +46,7 @@ def search_issues():
     resp = requests.get(
         url,
         headers=headers,
-        params={"q": QUERY, "sort": "created", "order": "desc"},
+        params={"q": build_query(), "sort": "created", "order": "desc"},
     )
     resp.raise_for_status()
     return resp.json()["items"]
@@ -83,11 +83,11 @@ def ai_filter(issue):
             break
         except Exception as e:
             if "429" in str(e) or "quota" in str(e).lower():
+                if attempt == 2:
+                    raise QuotaExceededError(str(e))
                 time.sleep(20)  # חרגנו ממכסה - נחכה קצת יותר ונסה שוב
             else:
                 raise
-    else:
-        return {"matches": False, "reason": "נכשל אחרי כמה ניסיונות"}
 
     text = resp.text.strip()
     text = text.replace("```json", "").replace("```", "").strip()
@@ -104,9 +104,13 @@ def send_email(matched_issues):
             f"{issue['title']}\n{issue['html_url']}\nלמה זה מתאים: {verdict['reason']}\n"
         )
     body = "\n---\n".join(lines)
+    subject = f"🐛 {len(matched_issues)} באגים חדשים שמתאימים לך"
+    send_raw_email(subject, body)
 
+
+def send_raw_email(subject, body):
     msg = MIMEText(body)
-    msg["Subject"] = f"🐛 {len(matched_issues)} באגים חדשים שמתאימים לך"
+    msg["Subject"] = subject
     msg["From"] = os.environ["EMAIL_FROM"]
     msg["To"] = os.environ["EMAIL_TO"]
 
@@ -125,8 +129,15 @@ def main():
     to_check = new_issues[:MAX_PER_RUN]
 
     matched = []
+    quota_hit = False
+
     for i, issue in enumerate(to_check):
-        verdict = ai_filter(issue)
+        try:
+            verdict = ai_filter(issue)
+        except QuotaExceededError:
+            # נגמרה המכסה של גימיני להיום/לדקה - עוצרים כאן, לא ממשיכים לנסות עוד
+            quota_hit = True
+            break
         if verdict["matches"]:
             matched.append((issue, verdict))
         seen.add(str(issue["id"]))  # מסמנים כ"נראה" גם אם נדחה, כדי לא לבדוק שוב
@@ -136,8 +147,29 @@ def main():
     if matched:
         send_email(matched)
 
+    if quota_hit:
+        send_raw_email(
+            "⚠️ בוט מעקב Issues - חריגה ממכסת Gemini",
+            "המכסה החינמית של Gemini נגמרה בריצה הזו. "
+            "חלק מה-Issues לא נבדקו והם יבדקו שוב בריצה הבאה. "
+            "אין צורך לפעול - זה קורה מדי פעם ונפתר לבד תוך שעה.",
+        )
+
     save_seen(seen)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        # כל שגיאה בלתי צפויה אחרת - לא מפילים את הריצה בלי הסבר,
+        # שולחים מייל עם השגיאה כדי שתדעי מה קרה
+        try:
+            send_raw_email(
+                "⚠️ בוט מעקב Issues - שגיאה בריצה",
+                f"הריצה נכשלה עם השגיאה הבאה:\n\n{e}",
+            )
+        except Exception:
+            pass  # אם גם שליחת המייל נכשלת, פשוט לא נשלח כלום
+        print(f"Error: {e}")
+        sys.exit(0)  # מסיימים בהצלחה כדי שה-Action לא יסומן כ-failed

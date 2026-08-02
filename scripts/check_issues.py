@@ -61,3 +61,83 @@ def load_seen():
 
 def save_seen(ids):
     with open(SEEN_FILE, "w") as f:
+        json.dump(list(ids), f)
+
+
+def ai_filter(issue):
+    """שולחת את ה-issue למודל ומקבלת החלטה: מתאים או לא, ולמה."""
+    model = genai.GenerativeModel("gemini-2.0-flash")
+    prompt = f"""הפרופיל של התורמת:
+{MY_PROFILE}
+
+ה-Issue:
+כותרת: {issue['title']}
+תיאור: {(issue.get('body') or '')[:1500]}
+
+השב אך ורק ב-JSON תקני, בלי טקסט נוסף:
+{{"matches": true/false, "reason": "משפט קצר בעברית"}}"""
+
+    for attempt in range(3):
+        try:
+            resp = model.generate_content(prompt)
+            break
+        except Exception as e:
+            if "429" in str(e) or "quota" in str(e).lower():
+                time.sleep(20)  # חרגנו ממכסה - נחכה קצת יותר ונסה שוב
+            else:
+                raise
+    else:
+        return {"matches": False, "reason": "נכשל אחרי כמה ניסיונות"}
+
+    text = resp.text.strip()
+    text = text.replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"matches": False, "reason": "שגיאת פענוח"}
+
+
+def send_email(matched_issues):
+    lines = []
+    for issue, verdict in matched_issues:
+        lines.append(
+            f"{issue['title']}\n{issue['html_url']}\nלמה זה מתאים: {verdict['reason']}\n"
+        )
+    body = "\n---\n".join(lines)
+
+    msg = MIMEText(body)
+    msg["Subject"] = f"🐛 {len(matched_issues)} באגים חדשים שמתאימים לך"
+    msg["From"] = os.environ["EMAIL_FROM"]
+    msg["To"] = os.environ["EMAIL_TO"]
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(os.environ["EMAIL_FROM"], os.environ["EMAIL_APP_PASSWORD"])
+        server.send_message(msg)
+
+
+def main():
+    issues = search_issues()
+    seen = load_seen()
+    new_issues = [i for i in issues if str(i["id"]) not in seen]
+
+    # בודקים רק MAX_PER_RUN בכל ריצה. השאר יבדקו בריצות הבאות (כל שעה),
+    # כי אנחנו לא מוסיפים אותם ל-seen עד שהם נבדקים בפועל.
+    to_check = new_issues[:MAX_PER_RUN]
+
+    matched = []
+    for i, issue in enumerate(to_check):
+        verdict = ai_filter(issue)
+        if verdict["matches"]:
+            matched.append((issue, verdict))
+        seen.add(str(issue["id"]))  # מסמנים כ"נראה" גם אם נדחה, כדי לא לבדוק שוב
+        if i < len(to_check) - 1:
+            time.sleep(SECONDS_BETWEEN_CALLS)
+
+    if matched:
+        send_email(matched)
+
+    save_seen(seen)
+
+
+if __name__ == "__main__":
+    main()

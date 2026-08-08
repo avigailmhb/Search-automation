@@ -22,7 +22,7 @@ MAX_PER_RUN = 5
 SECONDS_BETWEEN_CALLS = 15
 
 # שם המודל - עדכני כאן אם גוגל מפסיקה את זה בעתיד (בדקי ai.google.dev/gemini-api/docs/models)
-MODEL_NAME = "gemini-2.5-flash-lite"
+MODEL_NAME = "gemini-3.1-flash-lite"
 
 # תארי כאן בעברית מה מעניין אותך - זה הפרופיל שה-AI בודק מולו
 MY_PROFILE = """

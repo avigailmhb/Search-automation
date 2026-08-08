@@ -6,7 +6,8 @@ import requests
 import smtplib
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
-import google.generativeai as genai
+from google import genai
+from google.genai.errors import ClientError
 
 # בסיס השאילתה - חסר החלק של created:>=, הוא יתווסף דינמית בזמן ריצה
 BASE_QUERY = "org:microsoft is:issue is:open no:assignee label:bug"
@@ -19,6 +20,9 @@ LOOKBACK_HOURS = 3
 MAX_PER_RUN = 5
 # כמה שניות להמתין בין קריאה לקריאה ל-Gemini
 SECONDS_BETWEEN_CALLS = 15
+
+# שם המודל - עדכני כאן אם גוגל מפסיקה את זה בעתיד (בדקי ai.google.dev/gemini-api/docs/models)
+MODEL_NAME = "gemini-2.5-flash"
 
 # תארי כאן בעברית מה מעניין אותך - זה הפרופיל שה-AI בודק מולו
 MY_PROFILE = """
@@ -42,7 +46,7 @@ MY_PROFILE = """
 - עדיפות לתיקוני validation, parsing, error handling, CLI, configuration, compatibility, tests, logging או package metadata.
 """
 
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 
 class QuotaExceededError(Exception):
@@ -81,7 +85,6 @@ def save_seen(ids):
 
 def ai_filter(issue):
     """שולחת את ה-issue למודל ומקבלת החלטה: מתאים או לא, ולמה."""
-    model = genai.GenerativeModel("gemini-2.0-flash")
     prompt = f"""הפרופיל של התורמת:
 {MY_PROFILE}
 
@@ -94,10 +97,10 @@ def ai_filter(issue):
 
     for attempt in range(3):
         try:
-            resp = model.generate_content(prompt)
+            resp = client.models.generate_content(model=MODEL_NAME, contents=prompt)
             break
-        except Exception as e:
-            if "429" in str(e) or "quota" in str(e).lower():
+        except ClientError as e:
+            if e.code == 429 or "quota" in str(e).lower():
                 if attempt == 2:
                     raise QuotaExceededError(str(e))
                 time.sleep(20)  # חרגנו ממכסה - נחכה קצת יותר ונסה שוב

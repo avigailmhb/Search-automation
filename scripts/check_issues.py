@@ -171,9 +171,11 @@ def main():
     for i, issue in enumerate(to_check):
         try:
             verdict = ai_filter(issue)
-        except QuotaExceededError:
+        except QuotaExceededError as e:
             # נגמרה המכסה של גימיני להיום/לדקה - עוצרים כאן, לא ממשיכים לנסות עוד
             quota_hit = True
+            print(f"⚠️ חריגת מכסה ב-Gemini בזמן בדיקת: {issue['title']}")
+            print(f"פרטי השגיאה המלאים מגוגל:\n{e}")
             break
         if verdict["matches"]:
             matched.append((issue, verdict))
